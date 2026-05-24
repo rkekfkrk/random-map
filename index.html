@@ -3,352 +3,131 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>파일 선택 방식 시군구 랜덤 선택</title>
+  <title>Lucky Geo Spin</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin=""/>
   <style>
-    :root{--accent:#0078d4;--bg:#f7f7f7}
-    body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,"Noto Sans KR","Malgun Gothic";background:var(--bg);color:#222}
-    header{padding:12px;text-align:center;background:#fff;box-shadow:0 1px 4px rgba(0,0,0,.06)}
-    .wrap{max-width:1200px;margin:14px auto;padding:12px;display:flex;flex-direction:column;gap:12px}
-    .controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-    .controls .hint{font-size:13px;color:#666}
-    input[type=file]{display:none}
-    label.fileBtn{background:var(--accent);color:#fff;padding:8px 12px;border-radius:6px;cursor:pointer;font-weight:700}
-    button{background:#0078d4;color:#fff;border:none;padding:8px 12px;border-radius:6px;cursor:pointer;font-weight:700}
-    button.secondary{background:#6c757d}
-    #map{height:720px;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.06)}
-    .info{background:#fff;padding:10px;border-radius:8px;display:flex;justify-content:space-between;align-items:center}
-    .selected{font-weight:700;color:var(--accent)}
-    @media(max-width:900px){#map{height:520px}}
+    :root { --primary: #6366f1; --dark: #1e293b; --light: #f8fafc; }
+    body { margin: 0; font-family: 'Pretendard', sans-serif; background: #0f172a; color: white; display: flex; flex-direction: column; align-items: center; min-height: 100vh; }
+    header { width: 100%; padding: 20px; text-align: center; background: rgba(30, 41, 59, 0.8); backdrop-filter: blur(10px); }
+    .wrap { width: 95%; max-width: 900px; margin-top: 20px; }
+    
+    #map { height: 500px; border-radius: 16px; border: 4px solid #334155; box-shadow: 0 10px 25px rgba(0,0,0,0.3); margin-bottom: 20px; }
+    
+    .controls { display: flex; gap: 10px; justify-content: center; margin-bottom: 20px; flex-wrap: wrap; }
+    button { padding: 12px 24px; border: none; border-radius: 12px; font-weight: 800; cursor: pointer; transition: transform 0.1s, background 0.3s; }
+    button:active { transform: scale(0.95); }
+    #startBtn { background: #22c55e; color: white; }
+    #stopBtn { background: #ef4444; color: white; }
+    
+    .info { background: rgba(255,255,255,0.1); backdrop-filter: blur(5px); padding: 20px; border-radius: 16px; text-align: center; }
+    .selected { font-size: 1.5rem; color: #fbbf24; font-weight: 900; margin-top: 5px; display: block; text-shadow: 0 0 10px rgba(251,191,36,0.5); }
+    #status { margin-top: 10px; color: #94a3b8; font-size: 0.9rem; }
   </style>
 </head>
 <body>
-  <header><h1>파일 선택 방식 시군구 랜덤 선택</h1></header>
+  <header><h1>📍 Lucky Geo Spin</h1></header>
 
   <div class="wrap">
     <div class="controls">
-      <div class="hint">파일 선택: GeoJSON/JSON/CSV 또는 Shapefile ZIP을 여러 개 선택하세요.</div>
-      <div style="flex:1"></div>
-
-      <label class="fileBtn" for="fileInput">파일 선택</label>
-      <input id="fileInput" type="file" accept=".geojson,.json,.csv,.zip" multiple>
-
-      <button id="startBtn">랜덤 시작</button>
-      <button id="stopBtn" class="secondary">정지</button>
+      <label style="background:#475569; padding:12px 24px; border-radius:12px; cursor:pointer; font-weight:700;">
+        파일 선택 <input id="fileInput" type="file" accept=".geojson,.json,.csv,.zip" multiple style="display:none">
+      </label>
+      <button id="startBtn">🎰 랜덤 시작</button>
+      <button id="stopBtn" class="secondary">🚨 정지</button>
     </div>
 
     <div id="map"></div>
 
     <div class="info">
-      <div>현재 선택: <span id="currentName" class="selected">-</span></div>
+      <div>현재 선택된 지역</div>
+      <span id="currentName" class="selected">-</span>
       <div id="status">대기 중</div>
     </div>
   </div>
 
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6.5.0/turf.min.js"></script>
   <script src="https://unpkg.com/shpjs@latest/dist/shp.min.js"></script>
 
   <script>
-    // 지도 초기화
-    const map = L.map('map').setView([36.5,127.8],7);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:18, attribution:'© OpenStreetMap contributors'}).addTo(map);
+    const map = L.map('map').setView([36.5,127.8], 7);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
 
-    // UI 요소
-    const fileInput = document.getElementById('fileInput');
-    const startBtn = document.getElementById('startBtn');
-    const stopBtn = document.getElementById('stopBtn');
-    const currentName = document.getElementById('currentName');
-    const statusEl = document.getElementById('status');
-
-    // 데이터 저장
-    let items = []; // {id,name,type,layer,centroid}
+    let items = [];
     let layerGroup = L.layerGroup().addTo(map);
     let marker = null;
+    let spinController = { running:false, stopRequested:false, immediateStop:false };
 
-    // 랜덤 제어
-    let spinController = { running:false, stopRequested:false, immediateStop:false, loopPromise:null };
-
-    // 유틸
-    function cryptoRandomInt(max){ const a=new Uint32Array(1); crypto.getRandomValues(a); return a[0] % max; }
     function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
+    function cryptoRandomInt(max){ const a=new Uint32Array(1); crypto.getRandomValues(a); return a[0] % max; }
 
-    // 데이터 초기화
-    function clearData(){
-      items = [];
-      layerGroup.clearLayers();
-      if (marker) { map.removeLayer(marker); marker = null; }
-      currentName.textContent = '-';
-      statusEl.textContent = '데이터 초기화됨';
-    }
-
-    // 파일 배열 처리
-    fileInput.addEventListener('change', async (ev) => {
-      const files = Array.from(ev.target.files || []);
-      if (files.length === 0) { statusEl.textContent = '선택된 파일이 없습니다.'; return; }
-      clearData();
-      statusEl.textContent = `파일 ${files.length}개 처리 중...`;
-      for (const f of files) {
-        const name = f.name.toLowerCase();
-        try {
-          if (name.endsWith('.geojson') || name.endsWith('.json')) {
-            const text = await f.text();
-            const geo = JSON.parse(text);
-            loadGeoJSON(geo, f.name);
-          } else if (name.endsWith('.csv')) {
-            const text = await f.text();
-            loadCSV(text, f.name);
-          } else if (name.endsWith('.zip')) {
-            const ab = await f.arrayBuffer();
-            const geo = await shp(ab);
-            if (geo.type === 'FeatureCollection') loadGeoJSON(geo, f.name);
-            else {
-              for (const k of Object.keys(geo)) {
-                if (geo[k] && geo[k].type === 'FeatureCollection') loadGeoJSON(geo[k], f.name + '::' + k);
-              }
-            }
-          } else {
-            console.warn('지원되지 않는 파일:', f.name);
-          }
-        } catch (err) {
-          console.warn('파일 처리 오류', f.name, err);
-        }
-      }
-      if (items.length === 0) statusEl.textContent = '유효한 지리 데이터가 없습니다.';
-      else {
-        statusEl.textContent = `로드 완료 (${items.length}개)`;
-        // 지도 범위 맞춤
-        try {
-          const layers = layerGroup.getLayers();
-          if (layers.length) {
-            const fg = L.featureGroup(layers);
-            map.fitBounds(fg.getBounds().pad(0.2));
-          }
-        } catch(e){}
-      }
-    });
-
-    // GeoJSON/CSV 파싱 및 레이어 생성
-    function loadGeoJSON(geo, srcName='geojson'){
+    function loadGeoJSON(geo){
       const feats = geo.type === 'FeatureCollection' ? geo.features : [geo];
       feats.forEach((f) => {
-        const props = f.properties || {};
-        const name = props.SIG_KOR_NM || props.name || props.adm_nm || props.SIG_NM || props.ANAME || `지역 ${items.length+1}`;
-        try {
-          const layer = L.geoJSON(f, { style:{ color:'#888', weight:1, fillColor:'#888', fillOpacity:0.12 } }).addTo(layerGroup);
-          let centroid = [36.5,127.8];
-          try { const c = turf.centroid(f).geometry.coordinates; centroid = [c[1], c[0]]; } catch(e){}
-          items.push({ id: items.length, name, type:'polygon', layer, centroid });
-          layer.bindTooltip(name, { direction:'top' });
-        } catch(e){
-          console.warn('GeoJSON feature load failed', e);
-        }
+        const name = f.properties?.SIG_KOR_NM || f.properties?.name || '알 수 없는 지역';
+        const layer = L.geoJSON(f, { style:{ color:'#6366f1', weight:2, fillOpacity:0.1 } }).addTo(layerGroup);
+        let centroid = [36.5, 127.8];
+        try { const c = turf.centroid(f).geometry.coordinates; centroid = [c[1], c[0]]; } catch(e){}
+        items.push({ name, layer, centroid });
+        layer.bindTooltip(name);
       });
     }
 
-    function loadCSV(text, srcName='csv'){
-      try {
-        const parsed = Papa.parse(text, { header:true, skipEmptyLines:true });
-        parsed.data.forEach((row) => {
-          const name = row.name || row.NAME || row.지역 || row.adm_nm || `지역 ${items.length+1}`;
-          const lat = parseFloat(row.lat || row.LAT || row.latitude || row.y);
-          const lng = parseFloat(row.lng || row.LNG || row.longitude || row.x);
-          if (isNaN(lat) || isNaN(lng)) return;
-          const circle = L.circle([lat, lng], { radius:6000, color:'#888', weight:1, fillColor:'#888', fillOpacity:0.12 }).addTo(layerGroup);
-          circle.bindTooltip(name, { direction:'top' });
-          items.push({ id: items.length, name, type:'point', layer: circle, centroid:[lat,lng] });
-        });
-      } catch(e){
-        console.warn('CSV load failed', e);
-      }
-    }
-
-    // 스타일 제어
-    function resetStyles(){
-      items.forEach(it => {
-        if (it.type === 'polygon') it.layer.setStyle({ color:'#888', weight:1, fillColor:'#888', fillOpacity:0.12 });
-        else it.layer.setStyle({ color:'#888', weight:1, fillColor:'#888', fillOpacity:0.12 });
+    function highlightIndex(idx, color='#fbbf24'){
+      items.forEach((it, i) => {
+        it.layer.setStyle({ color: i === idx ? color : '#6366f1', weight: i === idx ? 4 : 2, fillOpacity: i === idx ? 0.5 : 0.1 });
       });
-    }
-    function highlightIndex(idx, color='#ffcc00', opacity=0.5, weight=2){
-      resetStyles();
-      const it = items[idx];
-      if (!it) return;
-      if (it.type === 'polygon') it.layer.setStyle({ color, weight, fillColor: color, fillOpacity: opacity });
-      else it.layer.setStyle({ color, weight, fillColor: color, fillOpacity: opacity });
-      currentName.textContent = it.name;
+      currentName.textContent = items[idx].name;
     }
 
-    // 선택 확정
-    function finalizeSelection(idx){
-      const it = items[idx];
-      if (!it) { statusEl.textContent = '선택 실패'; spinController.running=false; return; }
-      currentName.textContent = it.name;
-      statusEl.textContent = `${it.name} 선택됨`;
-      if (marker) { map.removeLayer(marker); marker = null; }
-      marker = L.marker(it.centroid).addTo(map).bindPopup(`<b>${it.name}</b><br>선택된 지역`).openPopup();
-      map.setView(it.centroid, it.type === 'polygon' ? 11 : 13, { animate:true });
-      highlightIndex(idx, '#0078d4', 0.6, 3);
-      spinController.running = false;
-      spinController.stopRequested = false;
-      spinController.immediateStop = false;
-    }
-
-    function finalizeWithFlash(idx){
-      const flashMax = 6;
-      let flashes = 0;
-      const t = setInterval(() => {
-        const on = (flashes % 2 === 0);
-        highlightIndex(idx, on ? '#0078d4' : '#ffcc00', on ? 0.65 : 0.25, on ? 3 : 2);
-        flashes++;
-        if (flashes > flashMax) {
-          clearInterval(t);
-          finalizeSelection(idx);
-        }
-      }, 220);
-    }
-
-    // 빠른 정지 중심의 회전 루틴
     async function runSpinFastStop(){
       const len = items.length;
-      if (len === 0) { statusEl.textContent = '데이터 없음'; spinController.running=false; return; }
-
-      // 초기 섞인 시퀀스
-      const rounds = 2 + cryptoRandomInt(3);
-      let sequence = [];
-      for (let r=0;r<rounds;r++){
-        const base = Array.from({length:len}, (_,i)=>i);
-        sequence = sequence.concat(shuffleArray(base));
-      }
-
-      let delay = 30;
-      let idxPointer = 0;
+      let idx = 0;
       spinController.stopRequested = false;
-      spinController.immediateStop = false;
-      statusEl.textContent = '순환 중';
+      
+      // 빠르게 돌기
+      while(!spinController.stopRequested){
+        idx = (idx + 1) % len;
+        highlightIndex(idx);
+        await sleep(50);
+      }
 
-      while (idxPointer < sequence.length && !spinController.stopRequested) {
-        const idx = sequence[idxPointer];
-        highlightIndex(idx, idx%2? '#00bfa5':'#ffcc00', 0.5, 2);
+      // 감속하며 멈추기 (슬롯 느낌)
+      let brakeSteps = 15 + cryptoRandomInt(10);
+      let delay = 80;
+      while(brakeSteps > 0){
+        idx = (idx + 1) % len;
+        highlightIndex(idx);
+        delay += 30; // 점점 느리게
         await sleep(delay);
-        idxPointer++;
+        brakeSteps--;
       }
-
-      if (spinController.stopRequested) {
-        const targetIndex = cryptoRandomInt(len);
-        const shortSteps = 1 + cryptoRandomInt(Math.min(4, Math.max(1, Math.floor(len/20))));
-        let currentShownIndex = (idxPointer>0) ? sequence[Math.max(0, idxPointer-1)] : cryptoRandomInt(len);
-        let steps = 0;
-        delay = 60;
-        while (steps < shortSteps && !spinController.immediateStop) {
-          currentShownIndex = (currentShownIndex + 1) % len;
-          highlightIndex(currentShownIndex, currentShownIndex%2? '#00bfa5':'#ffcc00', 0.5, 2);
-          steps++;
-          await sleep(delay);
-        }
-        if (spinController.immediateStop) { finalizeSelection(currentShownIndex); return; }
-        finalizeWithFlash(targetIndex);
-        return;
-      }
-
-      // 정지 요청 없을 때 (자동 멈춤) — 빠르게 감속
-      const targetIndex = cryptoRandomInt(len);
-      let currentShownIndex = (idxPointer>0) ? sequence[Math.max(0, idxPointer-1)] : cryptoRandomInt(len);
-      const minRounds = 1;
-      const extra = cryptoRandomInt(len);
-      const stepsNeeded = (minRounds * len) + ((targetIndex - currentShownIndex + len) % len) + extra;
-      let stepCount = 0;
-      delay = 150;
-      while (stepCount < stepsNeeded && !spinController.immediateStop) {
-        currentShownIndex = (currentShownIndex + 1) % len;
-        highlightIndex(currentShownIndex, currentShownIndex%2? '#00bfa5':'#ffcc00', 0.5, 2);
-        stepCount++;
-        await sleep(delay);
-        if (stepCount % Math.max(4, Math.floor(len/15)) === 0) delay = Math.min(500, Math.floor(delay * 1.2));
-      }
-      if (spinController.immediateStop) { finalizeSelection(currentShownIndex); return; }
-      finalizeWithFlash(targetIndex);
+      statusEl.textContent = "결과 확정!";
+      spinController.running = false;
     }
 
-    // 보조: 셔플
-    function shuffleArray(arr){
-      const a = arr.slice();
-      for(let i=a.length-1;i>0;i--){
-        const j = cryptoRandomInt(i+1);
-        [a[i],a[j]] = [a[j],a[i]];
-      }
-      return a;
-    }
-
-    // 버튼 이벤트
     startBtn.addEventListener('click', () => {
-      if (items.length === 0) { statusEl.textContent = '먼저 파일을 선택해 데이터를 로드하세요'; return; }
-      if (spinController.running) return;
-      if (marker) { map.removeLayer(marker); marker = null; }
-      currentName.textContent = '-';
+      if(items.length === 0) return alert("데이터를 먼저 로드하세요.");
+      if(spinController.running) return;
       spinController.running = true;
-      spinController.stopRequested = false;
-      spinController.immediateStop = false;
-      spinController.loopPromise = runSpinFastStop().catch(err => {
-        console.error(err);
-        statusEl.textContent = '회전 중 오류 발생';
-        spinController.running = false;
-      });
+      runSpinFastStop();
     });
 
-    stopBtn.addEventListener('click', () => {
-      if (!spinController.running) return;
-      if (!spinController.stopRequested) {
-        spinController.stopRequested = true;
-        statusEl.textContent = '정지 요청: 빠르게 마무리합니다';
-        return;
-      }
-      if (!spinController.immediateStop) {
-        spinController.immediateStop = true;
-        statusEl.textContent = '즉시 정지 요청: 현재 위치로 확정합니다';
-        return;
-      }
-    });
+    stopBtn.addEventListener('click', () => { spinController.stopRequested = true; });
 
-// ----------------- 추가된 부분 시작 ----------------- //
-    // 기본 JSON 데이터 자동 로드 함수
+    // 데이터 자동 로드
     async function loadDefaultData() {
       try {
-        statusEl.textContent = '기본 데이터(TL_SCCO_SIG.json) 불러오는 중...';
-        
-        // 같은 GitHub 저장소에 있는 TL_SCCO_SIG.json 파일을 네트워크로 불러옵니다.
-        const response = await fetch('./TL_SCCO_SIG.json');
-        
-        if (!response.ok) {
-          throw new Error('파일을 찾을 수 없습니다.');
-        }
-        
+        const response = await fetch('TL_SCCO_SIG.json');
+        if (!response.ok) return;
         const geo = await response.json();
-        
-        // 기존에 만들어둔 loadGeoJSON 함수를 이용해 지도에 그립니다.
-        loadGeoJSON(geo, 'TL_SCCO_SIG.json');
-        
-        statusEl.textContent = `기본 데이터 로드 완료 (${items.length}개 지역)`;
-        
-        // 불러온 데이터에 맞춰 지도 화면 범위를 자동 조절합니다.
-        const layers = layerGroup.getLayers();
-        if (layers.length) {
-          const fg = L.featureGroup(layers);
-          map.fitBounds(fg.getBounds().pad(0.2));
-        }
-      } catch (err) {
-        console.error('기본 데이터 로드 오류:', err);
-        statusEl.textContent = '기본 데이터를 불러오지 못했습니다. 파일을 직접 선택해주세요.';
-      }
+        loadGeoJSON(geo);
+        statusEl.textContent = `데이터 로드 완료: ${items.length}개 지역`;
+      } catch (e) { statusEl.textContent = "데이터 파일 로드 실패"; }
     }
-    // ----------------- 추가된 부분 끝 ----------------- //
 
-    // 페이지 로드 시 지도 보정 및 자동 로드 함수 실행
-    window.addEventListener('load', () => { 
-      setTimeout(()=>{ map.invalidateSize(); }, 200); 
-      loadDefaultData(); // 페이지가 열리면 이 함수가 자동으로 실행됩니다.
-    });
+    window.addEventListener('load', () => { loadDefaultData(); });
   </script>
 </body>
 </html>
