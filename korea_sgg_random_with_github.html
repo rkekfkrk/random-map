@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>파일 선택 방식 시군구 랜덤 선택</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin=""/>
+  <style>
+    :root{--accent:#0078d4;--bg:#f7f7f7}
+    body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,"Noto Sans KR","Malgun Gothic";background:var(--bg);color:#222}
+    header{padding:12px;text-align:center;background:#fff;box-shadow:0 1px 4px rgba(0,0,0,.06)}
+    .wrap{max-width:1200px;margin:14px auto;padding:12px;display:flex;flex-direction:column;gap:12px}
+    .controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+    .controls .hint{font-size:13px;color:#666}
+    input[type=file]{display:none}
+    label.fileBtn{background:var(--accent);color:#fff;padding:8px 12px;border-radius:6px;cursor:pointer;font-weight:700}
+    button{background:#0078d4;color:#fff;border:none;padding:8px 12px;border-radius:6px;cursor:pointer;font-weight:700}
+    button.secondary{background:#6c757d}
+    #map{height:720px;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.06)}
+    .info{background:#fff;padding:10px;border-radius:8px;display:flex;justify-content:space-between;align-items:center}
+    .selected{font-weight:700;color:var(--accent)}
+    @media(max-width:900px){#map{height:520px}}
+  </style>
+</head>
+<body>
+  <header><h1>파일 선택 방식 시군구 랜덤 선택</h1></header>
+
+  <div class="wrap">
+    <div class="controls">
+      <div class="hint">파일 선택: GeoJSON/JSON/CSV 또는 Shapefile ZIP을 여러 개 선택하세요.</div>
+      <div style="flex:1"></div>
+
+      <label class="fileBtn" for="fileInput">파일 선택</label>
+      <input id="fileInput" type="file" accept=".geojson,.json,.csv,.zip" multiple>
+
+      <button id="startBtn">랜덤 시작</button>
+      <button id="stopBtn" class="secondary">정지</button>
+    </div>
+
+    <div id="map"></div>
+
+    <div class="info">
+      <div>현재 선택: <span id="currentName" class="selected">-</span></div>
+      <div id="status">대기 중</div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6.5.0/turf.min.js"></script>
+  <script src="https://unpkg.com/shpjs@latest/dist/shp.min.js"></script>
+
+  <script>
+    // 지도 초기화
+    const map = L.map('map').setView([36.5,127.8],7);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:18, attribution:'© OpenStreetMap contributors'}).addTo(map);
+
+    // UI 요소
+    const fileInput = document.getElementById('fileInput');
+    const startBtn = document.getElementById('startBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const currentName = document.getElementById('currentName');
+    const statusEl = document.getElementById('status');
+
+    // 데이터 저장
+    let items = []; // {id,name,type,layer,centroid}
+    let layerGroup = L.layerGroup().addTo(map);
+    let marker = null;
+
+    // 랜덤 제어
+    let spinController = { running:false, stopRequested:false, immediateStop:false, loopPromise:null };
+
+    // 유틸
+    function cryptoRandomInt(max){ const a=new Uint32Array(1); crypto.getRandomValues(a); return a[0] % max; }
+    function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
+
+    // 데이터 초기화
+    function clearData(){
+      items = [];
+      layerGroup.clearLayers();
+      if (marker) { map.removeLayer(marker); marker = null; }
+      currentName.textContent = '-';
+      statusEl.textContent = '데이터 초기화됨';
+    }
+
+    // 파일 배열 처리
+    fileInput.addEventListener('change', async (ev) => {
+      const files = Array.from(ev.target.files || []);
+      if (files.length === 0) { statusEl.textContent = '선택된 파일이 없습니다.'; return; }
+      clearData();
+      statusEl.textContent = `파일 ${files.length}개 처리 중...`;
+      for (const f of files) {
+        const name = f.name.toLowerCase();
+        try {
+          if (name.endsWith('.geojson') || name.endsWith('.json')) {
+            const text = await f.text();
+            const geo = JSON.parse(text);
+            loadGeoJSON(geo, f.name);
+          } else if (name.endsWith('.csv')) {
+            const text = await f.text();
+            loadCSV(text, f.name);
+          } else if (name.endsWith('.zip')) {
+            const ab = await f.arrayBuffer();
+            const geo = await shp(ab);
+            if (geo.type === 'FeatureCollection') loadGeoJSON(geo, f.name);
+            else {
+              for (const k of Object.keys(geo)) {
+                if (geo[k] && geo[k].type === 'FeatureCollection') loadGeoJSON(geo[k], f.name + '::' + k);
+              }
+            }
+          } else {
+            console.warn('지원되지 않는 파일:', f.name);
+          }
+        } catch (err) {
+          console.warn('파일 처리 오류', f.name, err);
+        }
+      }
+      if (items.length === 0) statusEl.textContent = '유효한 지리 데이터가 없습니다.';
+      else {
+        statusEl.textContent = `로드 완료 (${items.length}개)`;
+        // 지도 범위 맞춤
+        try {
+          const layers = layerGroup.getLayers();
+          if (layers.length) {
+            const fg = L.featureGroup(layers);
+            map.fitBounds(fg.getBounds().pad(0.2));
+          }
+        } catch(e){}
+      }
+    });
+
+    // GeoJSON/CSV 파싱 및 레이어 생성
+    function loadGeoJSON(geo, srcName='geojson'){
+      const feats = geo.type === 'FeatureCollection' ? geo.features : [geo];
+      feats.forEach((f) => {
+        const props = f.properties || {};
+        const name = props.SIG_KOR_NM || props.name || props.adm_nm || props.SIG_NM || props.ANAME || `지역 ${items.length+1}`;
+        try {
+          const layer = L.geoJSON(f, { style:{ color:'#888', weight:1, fillColor:'#888', fillOpacity:0.12 } }).addTo(layerGroup);
+          let centroid = [36.5,127.8];
+          try { const c = turf.centroid(f).geometry.coordinates; centroid = [c[1], c[0]]; } catch(e){}
+          items.push({ id: items.length, name, type:'polygon', layer, centroid });
+          layer.bindTooltip(name, { direction:'top' });
+        } catch(e){
+          console.warn('GeoJSON feature load failed', e);
+        }
+      });
+    }
+
+    function loadCSV(text, srcName='csv'){
+      try {
+        const parsed = Papa.parse(text, { header:true, skipEmptyLines:true });
+        parsed.data.forEach((row) => {
+          const name = row.name || row.NAME || row.지역 || row.adm_nm || `지역 ${items.length+1}`;
+          const lat = parseFloat(row.lat || row.LAT || row.latitude || row.y);
+          const lng = parseFloat(row.lng || row.LNG || row.longitude || row.x);
+          if (isNaN(lat) || isNaN(lng)) return;
+          const circle = L.circle([lat, lng], { radius:6000, color:'#888', weight:1, fillColor:'#888', fillOpacity:0.12 }).addTo(layerGroup);
+          circle.bindTooltip(name, { direction:'top' });
+          items.push({ id: items.length, name, type:'point', layer: circle, centroid:[lat,lng] });
+        });
+      } catch(e){
+        console.warn('CSV load failed', e);
+      }
+    }
+
+    // 스타일 제어
+    function resetStyles(){
+      items.forEach(it => {
+        if (it.type === 'polygon') it.layer.setStyle({ color:'#888', weight:1, fillColor:'#888', fillOpacity:0.12 });
+        else it.layer.setStyle({ color:'#888', weight:1, fillColor:'#888', fillOpacity:0.12 });
+      });
+    }
+    function highlightIndex(idx, color='#ffcc00', opacity=0.5, weight=2){
+      resetStyles();
+      const it = items[idx];
+      if (!it) return;
+      if (it.type === 'polygon') it.layer.setStyle({ color, weight, fillColor: color, fillOpacity: opacity });
+      else it.layer.setStyle({ color, weight, fillColor: color, fillOpacity: opacity });
+      currentName.textContent = it.name;
+    }
+
+    // 선택 확정
+    function finalizeSelection(idx){
+      const it = items[idx];
+      if (!it) { statusEl.textContent = '선택 실패'; spinController.running=false; return; }
+      currentName.textContent = it.name;
+      statusEl.textContent = `${it.name} 선택됨`;
+      if (marker) { map.removeLayer(marker); marker = null; }
+      marker = L.marker(it.centroid).addTo(map).bindPopup(`<b>${it.name}</b><br>선택된 지역`).openPopup();
+      map.setView(it.centroid, it.type === 'polygon' ? 11 : 13, { animate:true });
+      highlightIndex(idx, '#0078d4', 0.6, 3);
+      spinController.running = false;
+      spinController.stopRequested = false;
+      spinController.immediateStop = false;
+    }
+
+    function finalizeWithFlash(idx){
+      const flashMax = 6;
+      let flashes = 0;
+      const t = setInterval(() => {
+        const on = (flashes % 2 === 0);
+        highlightIndex(idx, on ? '#0078d4' : '#ffcc00', on ? 0.65 : 0.25, on ? 3 : 2);
+        flashes++;
+        if (flashes > flashMax) {
+          clearInterval(t);
+          finalizeSelection(idx);
+        }
+      }, 220);
+    }
+
+    // 빠른 정지 중심의 회전 루틴
+    async function runSpinFastStop(){
+      const len = items.length;
+      if (len === 0) { statusEl.textContent = '데이터 없음'; spinController.running=false; return; }
+
+      // 초기 섞인 시퀀스
+      const rounds = 2 + cryptoRandomInt(3);
+      let sequence = [];
+      for (let r=0;r<rounds;r++){
+        const base = Array.from({length:len}, (_,i)=>i);
+        sequence = sequence.concat(shuffleArray(base));
+      }
+
+      let delay = 30;
+      let idxPointer = 0;
+      spinController.stopRequested = false;
+      spinController.immediateStop = false;
+      statusEl.textContent = '순환 중';
+
+      while (idxPointer < sequence.length && !spinController.stopRequested) {
+        const idx = sequence[idxPointer];
+        highlightIndex(idx, idx%2? '#00bfa5':'#ffcc00', 0.5, 2);
+        await sleep(delay);
+        idxPointer++;
+      }
+
+      if (spinController.stopRequested) {
+        const targetIndex = cryptoRandomInt(len);
+        const shortSteps = 1 + cryptoRandomInt(Math.min(4, Math.max(1, Math.floor(len/20))));
+        let currentShownIndex = (idxPointer>0) ? sequence[Math.max(0, idxPointer-1)] : cryptoRandomInt(len);
+        let steps = 0;
+        delay = 60;
+        while (steps < shortSteps && !spinController.immediateStop) {
+          currentShownIndex = (currentShownIndex + 1) % len;
+          highlightIndex(currentShownIndex, currentShownIndex%2? '#00bfa5':'#ffcc00', 0.5, 2);
+          steps++;
+          await sleep(delay);
+        }
+        if (spinController.immediateStop) { finalizeSelection(currentShownIndex); return; }
+        finalizeWithFlash(targetIndex);
+        return;
+      }
+
+      // 정지 요청 없을 때 (자동 멈춤) — 빠르게 감속
+      const targetIndex = cryptoRandomInt(len);
+      let currentShownIndex = (idxPointer>0) ? sequence[Math.max(0, idxPointer-1)] : cryptoRandomInt(len);
+      const minRounds = 1;
+      const extra = cryptoRandomInt(len);
+      const stepsNeeded = (minRounds * len) + ((targetIndex - currentShownIndex + len) % len) + extra;
+      let stepCount = 0;
+      delay = 150;
+      while (stepCount < stepsNeeded && !spinController.immediateStop) {
+        currentShownIndex = (currentShownIndex + 1) % len;
+        highlightIndex(currentShownIndex, currentShownIndex%2? '#00bfa5':'#ffcc00', 0.5, 2);
+        stepCount++;
+        await sleep(delay);
+        if (stepCount % Math.max(4, Math.floor(len/15)) === 0) delay = Math.min(500, Math.floor(delay * 1.2));
+      }
+      if (spinController.immediateStop) { finalizeSelection(currentShownIndex); return; }
+      finalizeWithFlash(targetIndex);
+    }
+
+    // 보조: 셔플
+    function shuffleArray(arr){
+      const a = arr.slice();
+      for(let i=a.length-1;i>0;i--){
+        const j = cryptoRandomInt(i+1);
+        [a[i],a[j]] = [a[j],a[i]];
+      }
+      return a;
+    }
+
+    // 버튼 이벤트
+    startBtn.addEventListener('click', () => {
+      if (items.length === 0) { statusEl.textContent = '먼저 파일을 선택해 데이터를 로드하세요'; return; }
+      if (spinController.running) return;
+      if (marker) { map.removeLayer(marker); marker = null; }
+      currentName.textContent = '-';
+      spinController.running = true;
+      spinController.stopRequested = false;
+      spinController.immediateStop = false;
+      spinController.loopPromise = runSpinFastStop().catch(err => {
+        console.error(err);
+        statusEl.textContent = '회전 중 오류 발생';
+        spinController.running = false;
+      });
+    });
+
+    stopBtn.addEventListener('click', () => {
+      if (!spinController.running) return;
+      if (!spinController.stopRequested) {
+        spinController.stopRequested = true;
+        statusEl.textContent = '정지 요청: 빠르게 마무리합니다';
+        return;
+      }
+      if (!spinController.immediateStop) {
+        spinController.immediateStop = true;
+        statusEl.textContent = '즉시 정지 요청: 현재 위치로 확정합니다';
+        return;
+      }
+    });
+
+    // 페이지 로드 시 지도 보정
+    window.addEventListener('load', () => { setTimeout(()=>{ map.invalidateSize(); }, 200); });
+  </script>
+</body>
+</html>
